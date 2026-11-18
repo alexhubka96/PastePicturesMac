@@ -10,22 +10,27 @@
 <body>
   <main>
     <section>
-      <h2><span class="num">1</span> Ячейки с названиями</h2>
-      <div class="row">
-        <input id="srcRange" type="text" placeholder="например A2:A200" autocomplete="off">
-        <button id="takeSelection" type="button">Взять выделенное</button>
-      </div>
-      <p class="hint" id="srcInfo">Выделите столбец с названиями или артикулами и нажмите «Взять выделенное».</p>
-    </section>
-
-    <section>
-      <h2><span class="num">2</span> Куда вставлять</h2>
       <label class="row">
+        <span><strong>Что сделать</strong></span>
         <select id="insertMode">
-          <option value="cell">в ячейку столбца</option>
-          <option value="note">в примечание (видно при наведении)</option>
+          <option value="cell">картинки из файлов — в ячейки</option>
+          <option value="note">картинки из файлов — в примечания</option>
+          <option value="move">перенести картинки из столбца в примечания</option>
         </select>
       </label>
+    </section>
+
+    <section class="fromFiles">
+      <h2><span class="num">1</span> Ячейки с названиями</h2>
+      <div class="row">
+        <input id="srcRange" type="text" placeholder="например A2 или A2:A200" autocomplete="off">
+        <button id="takeSelection" type="button">Взять выделенное</button>
+      </div>
+      <p class="hint" id="srcInfo">Выделите первую ячейку с названием (или весь столбец) и нажмите «Взять выделенное». От одной ячейки список сам продлевается вниз до последней заполненной.</p>
+    </section>
+
+    <section class="fromFiles">
+      <h2><span class="num">2</span> Куда вставлять</h2>
       <div class="cellOnly">
         <label class="row">
           <span>Столбец для картинок</span>
@@ -33,16 +38,31 @@
         </label>
         <p class="hint">Картинка встаёт в этот столбец, в ту же строку, что и название.</p>
       </div>
-      <div class="noteOnly" hidden>
-        <label class="row">
-          <span>Размер примечания, пикс.</span>
-          <input id="noteSize" type="number" class="short" min="50" max="1000" value="300">
-        </label>
-        <p class="hint">Примечание с картинкой добавляется к ячейке с названием. Результат откроется новой книгой, текущая не меняется. Сохраните новую книгу.</p>
-      </div>
+      <p class="hint noteOnly" hidden>Примечание с картинкой добавляется к ячейке с названием.</p>
     </section>
 
-    <section>
+    <section class="moveOnly" hidden>
+      <h2>Столбцы</h2>
+      <label class="row">
+        <span>Столбец с картинками</span>
+        <input id="picCol" type="text" class="short" placeholder="C" maxlength="3" autocomplete="off">
+      </label>
+      <label class="row">
+        <span>Столбец для примечаний</span>
+        <input id="noteCol" type="text" class="short" placeholder="B" maxlength="3" autocomplete="off">
+      </label>
+      <p class="hint">Картинки с текущего листа уходят в примечания к ячейкам выбранного столбца, в той же строке. В новой книге картинок на старом месте нет, а их столбец скрыт.</p>
+    </section>
+
+    <section class="notesAny" hidden>
+      <label class="row">
+        <span>Размер примечания, пикс.</span>
+        <input id="noteSize" type="number" class="short" min="50" max="1000" value="300">
+      </label>
+      <p class="hint">Результат откроется новой книгой, текущая не меняется. Сохраните новую книгу.</p>
+    </section>
+
+    <section class="fromFiles">
       <h2><span class="num">3</span> Картинки</h2>
       <div id="dropZone" class="drop">
         <strong>Перетащите сюда папку из Finder</strong>
@@ -97,7 +117,7 @@
       <label class="check cellOnly"><input id="markMissing" type="checkbox"> Закрашивать ячейки, для которых картинка не найдена</label>
     </details>
 
-    <button id="run" type="button" class="primary">Вставить картинки</button>
+    <button id="run" type="button" class="primary">Выполнить</button>
     <div id="progress" hidden><div id="bar"></div></div>
     <div id="status" role="status"></div>
 

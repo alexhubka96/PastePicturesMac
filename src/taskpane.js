@@ -9,16 +9,63 @@
   var SYNC_EVERY = 10;
 
   Office.onReady(function () {
+    loadSettings();
     $("takeSelection").onclick = takeSelection;
     $("pickFiles").onchange = onFilesPicked;
     $("clearFiles").onclick = clearFiles;
     setupDrop();
-    $("sizeMode").onchange = function () { $("rowHeightRow").hidden = this.value !== "row"; };
+    $("sizeMode").onchange = applySizeMode;
     $("insertMode").onchange = applyMode;
+    applySizeMode();
     applyMode();
+    SETTINGS.forEach(function (id) { $(id).addEventListener("change", saveSettings); });
     $("run").onclick = run;
     $("removeAll").onclick = removeAll;
+    showNoFiles();
   });
+
+  // ---------- запоминание настроек (хранятся на этом компьютере) ----------
+
+  var SETTINGS = ["insertMode", "targetCol", "noteSize", "picCol", "noteCol", "matchMode", "sizeMode",
+    "rowHeight", "padding", "placement", "compress", "replace", "markMissing"];
+  var STORE_KEY = "pp.settings.v1";
+  var SOURCE_KEY = "pp.lastSource.v1";
+
+  function storageGet(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function storageSet(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (e) { /* хранилище недоступно — просто не запоминаем */ }
+  }
+
+  function loadSettings() {
+    var saved;
+    try { saved = JSON.parse(storageGet(STORE_KEY) || "{}"); } catch (e) { saved = {}; }
+    SETTINGS.forEach(function (id) {
+      if (!(id in saved)) return;
+      var el = $(id);
+      if (el.type === "checkbox") el.checked = !!saved[id];
+      else el.value = saved[id];
+    });
+  }
+
+  function saveSettings() {
+    var out = {};
+    SETTINGS.forEach(function (id) {
+      var el = $(id);
+      out[id] = el.type === "checkbox" ? el.checked : el.value;
+    });
+    storageSet(STORE_KEY, JSON.stringify(out));
+  }
+
+  function rememberSource(text) { storageSet(SOURCE_KEY, text); }
+
+  function showNoFiles() {
+    var last = storageGet(SOURCE_KEY);
+    $("filesInfo").textContent = "Картинки ещё не выбраны." + (last ? " В прошлый раз: " + last + "." : "");
+  }
+
+  function applySizeMode() { $("rowHeightRow").hidden = $("sizeMode").value !== "row"; }
 
   // ---------- интерфейс ----------
 
@@ -33,10 +80,17 @@
     $("bar").style.width = total ? Math.round((done / total) * 100) + "%" : "0";
   }
 
+  // Режимы: cell — в ячейку, note — в примечание, move — перенести картинки из столбца в примечания.
   function applyMode() {
-    var note = $("insertMode").value === "note";
-    Array.prototype.forEach.call(document.querySelectorAll(".cellOnly"), function (el) { el.hidden = note; });
-    Array.prototype.forEach.call(document.querySelectorAll(".noteOnly"), function (el) { el.hidden = !note; });
+    var mode = $("insertMode").value;
+    var show = function (sel, on) {
+      Array.prototype.forEach.call(document.querySelectorAll(sel), function (el) { el.hidden = !on; });
+    };
+    show(".cellOnly", mode === "cell");
+    show(".noteOnly", mode === "note");
+    show(".moveOnly", mode === "move");
+    show(".notesAny", mode !== "cell");
+    show(".fromFiles", mode !== "move");
   }
 
   function setBusy(on) {
@@ -68,13 +122,16 @@
   function onFilesPicked(e) {
     var picked = Array.prototype.slice.call(e.target.files || []);
     e.target.value = "";
+    if (!picked.length) return;
+    var zipNames = picked.filter(function (f) { return L.fileExt(f.name) === "zip"; }).map(function (f) { return "«" + f.name + "»"; });
+    rememberSource(zipNames.length ? "архив " + zipNames.join(", ") : "выбранные файлы");
     addFiles(picked);
   }
 
   function clearFiles() {
     state.files = [];
     state.index = null;
-    $("filesInfo").textContent = "Картинки ещё не выбраны.";
+    showNoFiles();
     $("clearFiles").hidden = true;
   }
 
@@ -133,6 +190,8 @@
         }
       }
       var plainFiles = Array.prototype.slice.call(dt.files || []);
+      var dirs = entries.filter(function (x) { return x.isDirectory; }).map(function (x) { return "«" + x.name + "»"; });
+      rememberSource(dirs.length ? "папка " + dirs.join(", ") : "перетащенные файлы");
       $("filesInfo").textContent = "Читаю папку…";
       (entries.length ? collectEntries(entries) : Promise.resolve(plainFiles))
         .then(addFiles)
@@ -231,15 +290,28 @@
 
   // ---------- Excel ----------
 
+  // Если выделена одна ячейка, запоминается только она: при запуске список
+  // каждый раз заново продлевается вниз до последней заполненной ячейки.
   function takeSelection() {
     setStatus("");
     return Excel.run(function (ctx) {
       var r = ctx.workbook.getSelectedRange();
-      r.load("address,columnIndex,columnCount");
+      r.load("address,rowIndex,columnIndex,rowCount,columnCount");
       return ctx.sync().then(function () {
         $("srcRange").value = r.address;
-        if (!$("targetCol").value.trim()) $("targetCol").value = L.indexToCol(r.columnIndex + r.columnCount);
-        $("srcInfo").textContent = "Названия берутся из первого столбца диапазона " + L.splitAddress(r.address).address + ".";
+        if (!$("targetCol").value.trim()) {
+          $("targetCol").value = L.indexToCol(r.columnIndex + r.columnCount);
+          saveSettings();
+        }
+        return expandRange(ctx, r.worksheet, r);
+      }).then(function (full) {
+        full.load("address,rowCount");
+        return ctx.sync().then(function () {
+          var addr = L.splitAddress(full.address).address;
+          $("srcInfo").textContent = r.rowCount === 1 && r.columnCount === 1
+            ? "Берётся столбец вниз до последней заполненной ячейки: сейчас " + addr + " (" + full.rowCount + " шт.)."
+            : "Названия берутся из первого столбца диапазона " + addr + ".";
+        });
       });
     }).catch(fail);
   }
@@ -252,8 +324,42 @@
     return { sheet: sheet, range: sheet.getRange(parts.address) };
   }
 
+  // Одна ячейка → столбец от неё вниз до последней заполненной ячейки (пустые в середине пропускаются
+  // позже, при разборе). Диапазон из нескольких ячеек возвращается как есть.
+  function expandRange(ctx, sheet, range) {
+    if (range.rowCount !== 1 || range.columnCount !== 1) return Promise.resolve(range);
+    var used = sheet.getUsedRangeOrNullObject(true);
+    used.load("rowIndex,rowCount");
+    return ctx.sync().then(function () {
+      var row = range.rowIndex;
+      var col = range.columnIndex;
+      var last = used.isNullObject ? row : used.rowIndex + used.rowCount - 1;
+      if (last <= row) return range;
+      var tall = sheet.getRangeByIndexes(row, col, last - row + 1, 1);
+      tall.load("values");
+      return ctx.sync().then(function () {
+        var n = tall.values.length;
+        while (n > 1 && L.normalizeKey(tall.values[n - 1][0]) === "") n--;
+        return sheet.getRangeByIndexes(row, col, n, 1);
+      });
+    });
+  }
+
+  // Ячейки с названиями из поля шага 1, с продлением одной ячейки вниз.
+  function loadSource(ctx, text) {
+    var sr = getSheetAndRange(ctx, text);
+    sr.range.load("rowIndex,columnIndex,rowCount,columnCount");
+    return ctx.sync()
+      .then(function () { return expandRange(ctx, sr.sheet, sr.range); })
+      .then(function (range) {
+        range.load("values,rowIndex,columnIndex,rowCount");
+        return ctx.sync().then(function () { return { sheet: sr.sheet, range: range }; });
+      });
+  }
+
   function run() {
     if (state.busy) return;
+    if ($("insertMode").value === "move") return runMove();
     var srcText = $("srcRange").value.trim();
     var noteMode = $("insertMode").value === "note";
     var targetCol = L.colToIndex($("targetCol").value);
@@ -281,10 +387,8 @@
     var result = { inserted: 0, missing: [], errors: [] };
 
     Excel.run(function (ctx) {
-      var sr = getSheetAndRange(ctx, srcText);
-      var sheet = sr.sheet;
-      sr.range.load("values,rowIndex,columnIndex,rowCount");
-      return ctx.sync().then(function () {
+      return loadSource(ctx, srcText).then(function (sr) {
+        var sheet = sr.sheet;
         // Задания: строка, название, найденный файл.
         var jobs = [];
         var allTargets = new Set();
@@ -429,10 +533,10 @@
     setProgress(0, 0);
 
     Excel.run(function (ctx) {
-      var sr = getSheetAndRange(ctx, srcText);
-      sr.sheet.load("name");
-      sr.range.load("values,rowIndex,columnIndex");
-      return ctx.sync().then(function () {
+      return loadSource(ctx, srcText).then(function (sr) {
+        sr.sheet.load("name");
+        return ctx.sync().then(function () { return sr; });
+      }).then(function (sr) {
         sheetName = sr.sheet.name;
         var col = sr.range.columnIndex;
         sr.range.values.forEach(function (row, i) {
@@ -443,26 +547,7 @@
           else result.missing.push(String(value));
         });
         if (!jobs.length) return null;
-        // Границы столбцов справа и строк вокруг — для расчёта, какие ячейки накрывает примечание.
-        var firstRow = Math.max(0, jobs[0].row - 1);
-        var lastRow = Math.min(1048575, jobs[jobs.length - 1].row + EXTRA_ROWS);
-        var cols = [], rows = [];
-        for (var c = col + 1; c <= Math.min(16383, col + 1 + EXTRA_COLS); c++) {
-          var rc = sr.sheet.getRangeByIndexes(0, c, 1, 1);
-          rc.load("left");
-          cols.push(rc);
-        }
-        for (var r = firstRow; r <= lastRow; r++) {
-          var rr = sr.sheet.getRangeByIndexes(r, col, 1, 1);
-          rr.load("top");
-          rows.push(rr);
-        }
-        return ctx.sync().then(function () {
-          geo = {
-            firstCol: col + 1, colLefts: cols.map(function (x) { return x.left * 4 / 3; }),
-            firstRow: firstRow, rowTops: rows.map(function (x) { return x.top * 4 / 3; })
-          };
-        });
+        return loadGeometry(ctx, sr.sheet, col, jobs).then(function (g) { geo = g; });
       });
     })
       .then(function () {
@@ -506,6 +591,128 @@
       .then(function () { setBusy(false); });
   }
 
+  // Границы столбцов справа от col и строк вокруг заданий (в пикселях) —
+  // чтобы посчитать, какие ячейки накрывает примечание. jobs отсортированы по строкам.
+  function loadGeometry(ctx, sheet, col, jobs) {
+    var firstRow = Math.max(0, jobs[0].row - 1);
+    var lastRow = Math.min(1048575, jobs[jobs.length - 1].row + EXTRA_ROWS);
+    var cols = [], rows = [];
+    for (var c = col + 1; c <= Math.min(16383, col + 1 + EXTRA_COLS); c++) {
+      var rc = sheet.getRangeByIndexes(0, c, 1, 1);
+      rc.load("left");
+      cols.push(rc);
+    }
+    for (var r = firstRow; r <= lastRow; r++) {
+      var rr = sheet.getRangeByIndexes(r, col, 1, 1);
+      rr.load("top");
+      rows.push(rr);
+    }
+    return ctx.sync().then(function () {
+      return {
+        firstCol: col + 1, colLefts: cols.map(function (x) { return x.left * 4 / 3; }),
+        firstRow: firstRow, rowTops: rows.map(function (x) { return x.top * 4 / 3; })
+      };
+    });
+  }
+
+  // ---------- режим «перенести картинки из столбца в примечания» ----------
+  // Картинки берутся прямо из файла книги (в исходном качестве), в новой книге
+  // удаляются со своих мест, а столбец, где они стояли, скрывается.
+
+  function runMove() {
+    var picCol = L.colToIndex($("picCol").value);
+    var noteCol = L.colToIndex($("noteCol").value);
+    if (picCol < 0) return setStatus("Укажите букву столбца с картинками, например C.", "err");
+    if (noteCol < 0) return setStatus("Укажите букву столбца для примечаний, например B.", "err");
+    if (picCol === noteCol) return setStatus("Столбец для примечаний должен отличаться от столбца с картинками: тот будет скрыт.", "err");
+    var opts = {
+      size: clamp(parseFloat($("noteSize").value) || 300, 50, 1000),
+      compress: $("compress").checked,
+      replace: $("replace").checked
+    };
+    var result = { inserted: 0, missing: [], errors: [], skipped: [] };
+    var picLetter = L.indexToCol(picCol);
+    var sheetName, zip, info;
+
+    setBusy(true);
+    showMissing([]);
+    setStatus("Беру копию книги…");
+    setProgress(0, 0);
+
+    Excel.run(function (ctx) {
+      var s = ctx.workbook.worksheets.getActiveWorksheet();
+      s.load("name");
+      return ctx.sync().then(function () { sheetName = s.name; });
+    })
+      .then(function () { return Promise.all([getDocumentBytes(), loadJsZip()]); })
+      .then(function (r) { return r[1].loadAsync(r[0]); })
+      .then(function (z) { zip = z; return PPNotes.locateSheet(zip, sheetName); })
+      .then(function (i) { info = i; return PPNotes.findPictures(zip, info, picCol); })
+      .then(function (found) {
+        if (!found.length) {
+          result.errors.push("В столбце " + picLetter + " листа «" + sheetName + "» нет картинок.");
+          return null;
+        }
+        var existing = PPNotes.existingNotes(info);
+        var replaceRefs = new Set();
+        var seenRows = new Set();
+        var jobs = [];
+        found.forEach(function (p) {
+          var label = PPNotes.cellRef(p.row, picCol);
+          var ref = PPNotes.cellRef(p.row, noteCol);
+          if (seenRows.has(p.row)) { result.skipped.push(label + " — в строке уже есть картинка"); return; }
+          seenRows.add(p.row);
+          var st = existing.get(ref);
+          if (st === "foreign" || (st === "ours" && !opts.replace)) {
+            result.skipped.push(label + " — у " + ref + " уже есть примечание");
+            return;
+          }
+          if (st === "ours") replaceRefs.add(ref);
+          var name = "картинка." + p.ext;
+          jobs.push({ row: p.row, col: noteCol, value: label, pic: p,
+            item: { path: label, file: new File([p.bytes], name, { type: p.ext === "png" ? "image/png" : "image/jpeg" }) } });
+        });
+        if (!jobs.length) return null;
+        jobs.sort(function (a, b) { return a.row - b.row; });
+        return Excel.run(function (ctx) {
+          return loadGeometry(ctx, ctx.workbook.worksheets.getItem(sheetName), noteCol, jobs);
+        })
+          .then(function (geo) { return buildNotes(jobs, collapseColumn(geo, picCol), opts, result); })
+          .then(function (notes) {
+            if (!notes.length) return null;
+            setStatus("Собираю новую книгу…");
+            return PPNotes.removePictures(zip, info, notes.map(function (n) { return n.job.pic; }))
+              .then(function () {
+                PPNotes.hideColumn(info.sheetDoc, picCol);
+                return PPNotes.writeNotes(zip, info, notes, replaceRefs);
+              })
+              .then(function (z) { return z.generateAsync({ type: "base64", compression: "DEFLATE" }); })
+              .then(function (b64) { return Excel.createWorkbook(b64); });
+          });
+      })
+      .then(function () {
+        var lines = [];
+        if (result.inserted) {
+          lines.push("Готово: перенесено картинок в примечания — " + result.inserted + ". Столбец " + picLetter +
+            " скрыт. Результат открыт новой книгой, сохраните её.");
+        } else lines.push("Ничего не перенесено, новая книга не создавалась.");
+        if (result.skipped.length) lines.push("Пропущено:\n" + result.skipped.slice(0, 20).join("\n"));
+        if (result.errors.length) lines.push("Ошибки:\n" + result.errors.slice(0, 20).join("\n"));
+        setStatus(lines.join("\n"), result.errors.length || !result.inserted ? "err" : "ok");
+      })
+      .catch(fail)
+      .then(function () { setBusy(false); });
+  }
+
+  // В новой книге столбец с картинками скрыт: столбцы правее него сдвигаются влево на его ширину.
+  function collapseColumn(geo, col) {
+    var i = col - geo.firstCol;
+    if (i < 0 || i + 1 >= geo.colLefts.length) return geo;
+    var w = geo.colLefts[i + 1] - geo.colLefts[i];
+    var lefts = geo.colLefts.map(function (x, k) { return k > i ? x - w : x; });
+    return { firstCol: geo.firstCol, colLefts: lefts, firstRow: geo.firstRow, rowTops: geo.rowTops, hiddenCol: col };
+  }
+
   function geoLeft(geo, c) {
     var i = c - geo.firstCol;
     var a = geo.colLefts;
@@ -538,9 +745,9 @@
           return encodeImage(file, img, box, opts.compress).then(function (b64) {
             img.release();
             var a = PPNotes.computeAnchor(j.row, j.col, wPx, hPx,
-              function (c) { return geoLeft(geo, c); }, function (r) { return geoTop(geo, r); });
+              function (c) { return geoLeft(geo, c); }, function (r) { return geoTop(geo, r); }, geo.hiddenCol);
             notes.push({
-              row: j.row, col: j.col, anchor: a.anchor,
+              job: j, row: j.row, col: j.col, anchor: a.anchor,
               leftPt: a.leftPx * 0.75, topPt: a.topPx * 0.75, widthPt: box.width, heightPt: box.height,
               bytes: base64ToBytes(b64), ext: b64.indexOf("iVBOR") === 0 ? "png" : "jpeg"
             });

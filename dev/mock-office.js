@@ -3,7 +3,9 @@
   var COL_W = 48, ROW_H = 15;
   var sheet = {
     name: "Лист1",
-    cells: {}, rowH: {}, fills: {}, shapes: [],
+    cells: {}, rowH: {}, colW: {}, fills: {}, shapes: [],
+    colWidth: function (c) { return this.colW[c] || COL_W; },
+    left: function (c) { var l = 0; for (var i = 0; i < c; i++) l += this.colWidth(i); return l; },
     rowHeight: function (r) { return this.rowH[r] || ROW_H; },
     top: function (r) { var t = 0; for (var i = 0; i < r; i++) t += this.rowHeight(i); return t; }
   };
@@ -20,6 +22,7 @@
       rowIndex: r, columnIndex: c, rowCount: rc, columnCount: cc,
       address: "Лист1!" + String.fromCharCode(65 + c) + (r + 1) + ":" + String.fromCharCode(65 + c + cc - 1) + (r + rc),
       load: function () {},
+      get worksheet() { return ws; },
       format: {
         set rowHeight(v) { sheet.rowH[r] = v; },
         fill: { set color(v) { sheet.fills[r + ":" + c] = v; } }
@@ -27,9 +30,9 @@
     };
     Object.defineProperty(o, "values", { get: function () {
       var out = []; for (var i = 0; i < rc; i++) { var row = []; for (var j = 0; j < cc; j++) row.push(sheet.cells[(r + i) + ":" + (c + j)] ?? ""); out.push(row); } return out; } });
-    Object.defineProperty(o, "left", { get: function () { return c * COL_W; } });
+    Object.defineProperty(o, "left", { get: function () { return sheet.left(c); } });
     Object.defineProperty(o, "top", { get: function () { return sheet.top(r); } });
-    Object.defineProperty(o, "width", { get: function () { return cc * COL_W; } });
+    Object.defineProperty(o, "width", { get: function () { var w = 0; for (var j = 0; j < cc; j++) w += sheet.colWidth(c + j); return w; } });
     Object.defineProperty(o, "height", { get: function () { var h = 0; for (var i = 0; i < rc; i++) h += sheet.rowHeight(r + i); return h; } });
     return o;
   }
@@ -38,6 +41,11 @@
     load: function () {},
     getRange: parse,
     getRangeByIndexes: rangeObj,
+    getUsedRangeOrNullObject: function () {
+      var max = -1;
+      Object.keys(sheet.cells).forEach(function (k) { if (sheet.cells[k] !== "") max = Math.max(max, +k.split(":")[0]); });
+      return max < 0 ? { isNullObject: true, load: function () {} } : { isNullObject: false, rowIndex: 0, rowCount: max + 1, load: function () {} };
+    },
     shapes: {
       get items() { return sheet.shapes.slice(); },
       load: function () {},
@@ -55,7 +63,7 @@
     AsyncResultStatus: { Succeeded: "succeeded", Failed: "failed" },
     context: { document: { getFileAsync: function (type, opts, cb) {
       var load = window.__docBytes ? Promise.resolve(window.__docBytes)
-        : fetch("sample.xlsx").then(function (r) { return r.arrayBuffer(); }).then(function (b) { return new Uint8Array(b); });
+        : fetch(window.__docUrl || "sample.xlsx").then(function (r) { return r.arrayBuffer(); }).then(function (b) { return new Uint8Array(b); });
       load.then(function (bytes) {
         var size = opts.sliceSize, count = Math.ceil(bytes.length / size);
         cb({ status: "succeeded", value: {
@@ -70,7 +78,7 @@
     createWorkbook: function (b64) { window.__created = b64; return Promise.resolve(); },
     run: function (fn) {
       var ctx = { workbook: {
-        getSelectedRange: function () { return rangeObj(1, 0, 8, 1); },
+        getSelectedRange: function () { var s = window.__sel || [1, 0, 8, 1]; return rangeObj(s[0], s[1], s[2], s[3]); },
         worksheets: {
           getActiveWorksheet: function () { return ws; },
           getItem: function (n) { if (n !== sheet.name) { var e = new Error("no sheet"); e.code = "ItemNotFound"; throw e; } return ws; }

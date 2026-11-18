@@ -355,8 +355,10 @@
 
   // Якорь примечания в формате Excel: столбец, отступ px, строка, отступ px (левый верх), то же для правого низа.
   // colLeftPx(c) / rowTopPx(r) — левая граница столбца и верхняя граница строки в пикселях.
-  function computeAnchor(row, col, widthPx, heightPx, colLeftPx, rowTopPx) {
+  // hiddenCol — столбец, который будет скрыт (ширина 0): начинать примечание в нём нельзя.
+  function computeAnchor(row, col, widthPx, heightPx, colLeftPx, rowTopPx, hiddenCol) {
     var c1 = col + 1, dx1 = 15;
+    if (c1 === hiddenCol) c1++;
     var r1 = Math.max(0, row - 1), dy1 = row > 0 ? 10 : 2;
     var x2 = colLeftPx(c1) + dx1 + widthPx;
     var y2 = rowTopPx(r1) + dy1 + heightPx;
@@ -371,8 +373,144 @@
     };
   }
 
+  // ---------- картинки на листе (DrawingML) ----------
+
+  var XDR_NS = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
+  var A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
+
+  function childEl(el, localName) {
+    for (var n = el && el.firstChild; n; n = n.nextSibling) if (n.nodeType === 1 && n.localName === localName) return n;
+    return null;
+  }
+
+  function firstAnchor(el) {
+    if (el.localName === "twoCellAnchor" || el.localName === "oneCellAnchor") return el;
+    var list = el.getElementsByTagNameNS(XDR_NS, "*");
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].localName === "twoCellAnchor" || list[i].localName === "oneCellAnchor") return list[i];
+    }
+    return null;
+  }
+
+  // Картинки, левый верхний угол которых стоит в столбце col: [{ node, row, relId, mediaPath, bytes, ext }].
+  function findPictures(zip, info, col) {
+    var drawingEl = info.sheetDoc.getElementsByTagNameNS(MAIN_NS, "drawing")[0];
+    if (!drawingEl) return Promise.resolve([]);
+    var rid = drawingEl.getAttributeNS(REL_NS, "id");
+    var rel = relList(info.sheetRels).filter(function (r) { return r.getAttribute("Id") === rid; })[0];
+    if (!rel) return Promise.resolve([]);
+    info.drawingPath = resolvePath(dirOf(info.sheetPath), rel.getAttribute("Target"));
+    return Promise.all([readXml(zip, info.drawingPath), readXml(zip, relsPathOf(info.drawingPath))]).then(function (r) {
+      info.drawingDoc = r[0];
+      info.drawingRelsDoc = r[1];
+      if (!info.drawingDoc || !info.drawingRelsDoc) return [];
+      var ddir = dirOf(info.drawingPath);
+      var rels = relList(info.drawingRelsDoc);
+      var out = [];
+      for (var n = info.drawingDoc.documentElement.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType !== 1) continue;
+        var anchor = firstAnchor(n);
+        var pic = childEl(anchor, "pic");
+        var from = childEl(anchor, "from");
+        if (!pic || !from) continue;
+        if (+childEl(from, "col").textContent !== col) continue;
+        var blip = pic.getElementsByTagNameNS(A_NS, "blip")[0];
+        var embed = blip && blip.getAttributeNS(REL_NS, "embed");
+        var mrel = embed && rels.filter(function (x) { return x.getAttribute("Id") === embed; })[0];
+        if (!mrel || mrel.getAttribute("TargetMode") === "External") continue; // картинка-ссылка, не встроена
+        var mediaPath = resolvePath(ddir, mrel.getAttribute("Target"));
+        out.push({ node: n, row: +childEl(from, "row").textContent, relId: embed, mediaPath: mediaPath,
+          ext: mediaPath.slice(mediaPath.lastIndexOf(".") + 1).toLowerCase() });
+      }
+      return Promise.all(out.map(function (p) {
+        var f = zip.file(p.mediaPath);
+        return f ? f.async("uint8array").then(function (b) { p.bytes = b; }) : null;
+      })).then(function () {
+        return out.filter(function (p) { return p.bytes; });
+      });
+    });
+  }
+
+  // Убирает перенесённые картинки с листа; файлы картинок удаляются, если на них больше никто не ссылается.
+  function removePictures(zip, info, pics) {
+    if (!pics.length) return Promise.resolve();
+    pics.forEach(function (p) { if (p.node.parentNode) p.node.parentNode.removeChild(p.node); });
+    var stillUsed = new Set();
+    var all = info.drawingDoc.getElementsByTagName("*");
+    for (var i = 0; i < all.length; i++) {
+      ["embed", "link", "id"].forEach(function (a) {
+        var v = all[i].getAttributeNS(REL_NS, a);
+        if (v) stillUsed.add(v);
+      });
+    }
+    var dropped = [];
+    relList(info.drawingRelsDoc).forEach(function (r) {
+      var id = r.getAttribute("Id");
+      if (pics.some(function (p) { return p.relId === id; }) && !stillUsed.has(id)) {
+        dropped.push(resolvePath(dirOf(info.drawingPath), r.getAttribute("Target")));
+        r.parentNode.removeChild(r);
+      }
+    });
+    zip.file(info.drawingPath, xmlString(info.drawingDoc));
+    zip.file(relsPathOf(info.drawingPath), xmlString(info.drawingRelsDoc));
+    if (!dropped.length) return Promise.resolve();
+    // Та же картинка может использоваться на другом листе — проверяем все связи книги.
+    var relFiles = zip.file(/\.rels$/);
+    return Promise.all(relFiles.map(function (f) {
+      return f.async("string").then(function (text) {
+        var src = f.name.replace("_rels/", "").replace(/\.rels$/, "");
+        var doc = parseXml(text);
+        return relList(doc).map(function (r) { return resolvePath(dirOf(src), r.getAttribute("Target")); });
+      });
+    })).then(function (lists) {
+      var targets = new Set([].concat.apply([], lists));
+      dropped.forEach(function (m) { if (!targets.has(m)) zip.remove(m); });
+    });
+  }
+
+  // Скрывает столбец (col — номер с нуля) через <cols> листа.
+  function hideColumn(sheetDoc, col) {
+    var n = col + 1;
+    var rootEl = sheetDoc.documentElement;
+    var pfx = rootEl.prefix ? rootEl.prefix + ":" : "";
+    var cols = sheetDoc.getElementsByTagNameNS(MAIN_NS, "cols")[0];
+    if (!cols) {
+      cols = sheetDoc.createElementNS(MAIN_NS, pfx + "cols");
+      rootEl.insertBefore(cols, sheetDoc.getElementsByTagNameNS(MAIN_NS, "sheetData")[0] || null);
+    }
+    var items = Array.prototype.slice.call(cols.getElementsByTagNameNS(MAIN_NS, "col"));
+    for (var i = 0; i < items.length; i++) {
+      var c = items[i];
+      var min = +c.getAttribute("min"), max = +c.getAttribute("max");
+      if (n < min || n > max) continue;
+      if (min === max) { c.setAttribute("hidden", "1"); return; }
+      var part = function (a, b, hide) {
+        var e = c.cloneNode(false);
+        e.setAttribute("min", String(a));
+        e.setAttribute("max", String(b));
+        if (hide) e.setAttribute("hidden", "1");
+        return e;
+      };
+      if (min < n) cols.insertBefore(part(min, n - 1, false), c);
+      cols.insertBefore(part(n, n, true), c);
+      if (n < max) cols.insertBefore(part(n + 1, max, false), c);
+      cols.removeChild(c);
+      return;
+    }
+    var el = sheetDoc.createElementNS(MAIN_NS, pfx + "col");
+    el.setAttribute("min", String(n));
+    el.setAttribute("max", String(n));
+    el.setAttribute("width", "9.140625");
+    el.setAttribute("hidden", "1");
+    var before = items.filter(function (x) { return +x.getAttribute("min") > n; })[0] || null;
+    cols.insertBefore(el, before);
+  }
+
   var api = {
     AUTHOR: AUTHOR,
+    findPictures: findPictures,
+    removePictures: removePictures,
+    hideColumn: hideColumn,
     locateSheet: locateSheet,
     existingNotes: existingNotes,
     writeNotes: writeNotes,
