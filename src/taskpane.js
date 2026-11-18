@@ -14,6 +14,8 @@
     $("clearFiles").onclick = clearFiles;
     setupDrop();
     $("sizeMode").onchange = function () { $("rowHeightRow").hidden = this.value !== "row"; };
+    $("insertMode").onchange = applyMode;
+    applyMode();
     $("run").onclick = run;
     $("removeAll").onclick = removeAll;
   });
@@ -29,6 +31,12 @@
   function setProgress(done, total) {
     $("progress").hidden = total === 0;
     $("bar").style.width = total ? Math.round((done / total) * 100) + "%" : "0";
+  }
+
+  function applyMode() {
+    var note = $("insertMode").value === "note";
+    Array.prototype.forEach.call(document.querySelectorAll(".cellOnly"), function (el) { el.hidden = note; });
+    Array.prototype.forEach.call(document.querySelectorAll(".noteOnly"), function (el) { el.hidden = !note; });
   }
 
   function setBusy(on) {
@@ -247,10 +255,12 @@
   function run() {
     if (state.busy) return;
     var srcText = $("srcRange").value.trim();
+    var noteMode = $("insertMode").value === "note";
     var targetCol = L.colToIndex($("targetCol").value);
     if (!srcText) return setStatus("Укажите ячейки с названиями (шаг 1).", "err");
-    if (targetCol < 0) return setStatus("Укажите букву столбца для картинок (шаг 2), например B.", "err");
+    if (!noteMode && targetCol < 0) return setStatus("Укажите букву столбца для картинок (шаг 2), например B.", "err");
     if (!state.index || !state.index.list.length) return setStatus("Выберите папку или файлы с картинками (шаг 3).", "err");
+    if (noteMode) return runNotes(srcText);
 
     var opts = {
       mode: $("matchMode").value,
@@ -392,6 +402,195 @@
       .then(function () { setStatus("Удалено картинок: " + removed + ".", "ok"); })
       .catch(fail)
       .then(function () { setBusy(false); });
+  }
+
+  // ---------- режим «в примечание» ----------
+  // Office.js не умеет ставить картинку в примечание, поэтому надстройка берёт копию книги,
+  // дописывает в неё примечания с картинкой-фоном и открывает результат новой книгой.
+
+  var EXTRA_COLS = 80;  // сколько столбцов справа и строк снизу измерять для размера примечания
+  var EXTRA_ROWS = 120;
+
+  function runNotes(srcText) {
+    var opts = {
+      mode: $("matchMode").value,
+      size: clamp(parseFloat($("noteSize").value) || 300, 50, 1000),
+      compress: $("compress").checked,
+      replace: $("replace").checked
+    };
+    var result = { inserted: 0, missing: [], errors: [], skipped: [] };
+    var jobs = [];
+    var sheetName;
+    var geo = null;
+
+    setBusy(true);
+    showMissing([]);
+    setStatus("Читаю названия…");
+    setProgress(0, 0);
+
+    Excel.run(function (ctx) {
+      var sr = getSheetAndRange(ctx, srcText);
+      sr.sheet.load("name");
+      sr.range.load("values,rowIndex,columnIndex");
+      return ctx.sync().then(function () {
+        sheetName = sr.sheet.name;
+        var col = sr.range.columnIndex;
+        sr.range.values.forEach(function (row, i) {
+          var value = row[0];
+          if (L.normalizeKey(value) === "") return;
+          var hit = L.findFile(state.index, value, opts.mode);
+          if (hit) jobs.push({ row: sr.range.rowIndex + i, col: col, value: String(value), item: hit });
+          else result.missing.push(String(value));
+        });
+        if (!jobs.length) return null;
+        // Границы столбцов справа и строк вокруг — для расчёта, какие ячейки накрывает примечание.
+        var firstRow = Math.max(0, jobs[0].row - 1);
+        var lastRow = Math.min(1048575, jobs[jobs.length - 1].row + EXTRA_ROWS);
+        var cols = [], rows = [];
+        for (var c = col + 1; c <= Math.min(16383, col + 1 + EXTRA_COLS); c++) {
+          var rc = sr.sheet.getRangeByIndexes(0, c, 1, 1);
+          rc.load("left");
+          cols.push(rc);
+        }
+        for (var r = firstRow; r <= lastRow; r++) {
+          var rr = sr.sheet.getRangeByIndexes(r, col, 1, 1);
+          rr.load("top");
+          rows.push(rr);
+        }
+        return ctx.sync().then(function () {
+          geo = {
+            firstCol: col + 1, colLefts: cols.map(function (x) { return x.left * 4 / 3; }),
+            firstRow: firstRow, rowTops: rows.map(function (x) { return x.top * 4 / 3; })
+          };
+        });
+      });
+    })
+      .then(function () {
+        if (!jobs.length) return null;
+        setStatus("Беру копию книги…");
+        return Promise.all([getDocumentBytes(), loadJsZip()]).then(function (r) {
+          return r[1].loadAsync(r[0]);
+        }).then(function (zip) {
+          return PPNotes.locateSheet(zip, sheetName).then(function (info) {
+            var existing = PPNotes.existingNotes(info);
+            var replaceRefs = new Set();
+            var todo = jobs.filter(function (j) {
+              var ref = PPNotes.cellRef(j.row, j.col);
+              var st = existing.get(ref);
+              if (!st) return true;
+              if (st === "ours" && opts.replace) { replaceRefs.add(ref); return true; }
+              result.skipped.push(j.value + " (" + ref + ")");
+              return false;
+            });
+            return buildNotes(todo, geo, opts, result).then(function (notes) {
+              if (!notes.length) return null;
+              setStatus("Собираю новую книгу…");
+              return PPNotes.writeNotes(zip, info, notes, replaceRefs)
+                .then(function (z) { return z.generateAsync({ type: "base64", compression: "DEFLATE" }); })
+                .then(function (b64) { return Excel.createWorkbook(b64); });
+            });
+          });
+        });
+      })
+      .then(function () {
+        var lines = [];
+        if (result.inserted) lines.push("Готово: примечаний с картинками — " + result.inserted + ". Результат открыт новой книгой, сохраните её.");
+        else lines.push("Примечания не добавлены, новая книга не создавалась.");
+        if (result.missing.length) lines.push("Не найдено картинок: " + result.missing.length + ".");
+        if (result.skipped.length) lines.push("Пропущено, в ячейке уже есть другое примечание: " + result.skipped.slice(0, 20).join(", "));
+        if (result.errors.length) lines.push("Ошибки:\n" + result.errors.slice(0, 20).join("\n"));
+        setStatus(lines.join("\n"), result.errors.length || !result.inserted ? "err" : "ok");
+        showMissing(result.missing);
+      })
+      .catch(fail)
+      .then(function () { setBusy(false); });
+  }
+
+  function geoLeft(geo, c) {
+    var i = c - geo.firstCol;
+    var a = geo.colLefts;
+    if (i < a.length) return a[i];
+    var w = a.length > 1 ? a[a.length - 1] - a[a.length - 2] : 64;
+    return a[a.length - 1] + (i - a.length + 1) * w;
+  }
+
+  function geoTop(geo, r) {
+    var i = r - geo.firstRow;
+    var a = geo.rowTops;
+    if (i < a.length) return a[i];
+    return a[a.length - 1] + (i - a.length + 1) * 20;
+  }
+
+  // Картинки для примечаний: вписываются в квадрат «Размер примечания» с сохранением пропорций.
+  function buildNotes(jobs, geo, opts, result) {
+    var notes = [];
+    var total = jobs.length;
+    setProgress(0, total);
+    return jobs.reduce(function (p, j, i) {
+      return p.then(function () {
+        setStatus("Готовлю " + (i + 1) + " из " + total + ": " + j.value);
+        var file;
+        return realFile(j.item.file).then(function (f) { file = f; return decodeImage(f); }).then(function (img) {
+          var k = opts.size / Math.max(img.width, img.height);
+          var wPx = Math.max(1, Math.round(img.width * k));
+          var hPx = Math.max(1, Math.round(img.height * k));
+          var box = { width: wPx * 0.75, height: hPx * 0.75 };
+          return encodeImage(file, img, box, opts.compress).then(function (b64) {
+            img.release();
+            var a = PPNotes.computeAnchor(j.row, j.col, wPx, hPx,
+              function (c) { return geoLeft(geo, c); }, function (r) { return geoTop(geo, r); });
+            notes.push({
+              row: j.row, col: j.col, anchor: a.anchor,
+              leftPt: a.leftPx * 0.75, topPt: a.topPx * 0.75, widthPt: box.width, heightPt: box.height,
+              bytes: base64ToBytes(b64), ext: b64.indexOf("iVBOR") === 0 ? "png" : "jpeg"
+            });
+            result.inserted++;
+          });
+        }).catch(function (err) {
+          result.errors.push(j.value + " (" + j.item.path + "): " + (err && err.message ? err.message : err));
+        }).then(function () { setProgress(i + 1, total); });
+      });
+    }, Promise.resolve()).then(function () { return notes; });
+  }
+
+  // Копия текущей книги в виде .xlsx (порциями по 4 МБ).
+  function getDocumentBytes() {
+    return new Promise(function (resolve, reject) {
+      Office.context.document.getFileAsync(Office.FileType.Compressed, { sliceSize: 4194304 }, function (res) {
+        if (res.status !== Office.AsyncResultStatus.Succeeded) {
+          return reject(new Error("не удалось получить копию книги: " + (res.error && res.error.message)));
+        }
+        var file = res.value;
+        var parts = [];
+        var size = 0;
+        (function next(i) {
+          if (i >= file.sliceCount) {
+            file.closeAsync();
+            var out = new Uint8Array(size);
+            var pos = 0;
+            parts.forEach(function (p) { out.set(p, pos); pos += p.length; });
+            return resolve(out);
+          }
+          file.getSliceAsync(i, function (r) {
+            if (r.status !== Office.AsyncResultStatus.Succeeded) {
+              file.closeAsync();
+              return reject(new Error("не удалось прочитать копию книги: " + (r.error && r.error.message)));
+            }
+            var chunk = new Uint8Array(r.value.data);
+            parts.push(chunk);
+            size += chunk.length;
+            next(i + 1);
+          });
+        })(0);
+      });
+    });
+  }
+
+  function base64ToBytes(b64) {
+    var bin = atob(b64);
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
   }
 
   // ---------- картинки ----------

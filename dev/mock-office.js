@@ -1,6 +1,6 @@
 // Заглушка Office/Excel для проверки панели в обычном браузере.
 (function () {
-  var COL_W = 64, ROW_H = 20;
+  var COL_W = 48, ROW_H = 15;
   var sheet = {
     name: "Лист1",
     cells: {}, rowH: {}, fills: {}, shapes: [],
@@ -34,6 +34,8 @@
     return o;
   }
   var ws = {
+    name: "Лист1",
+    load: function () {},
     getRange: parse,
     getRangeByIndexes: rangeObj,
     shapes: {
@@ -46,8 +48,26 @@
       }
     }
   };
-  window.Office = { onReady: function (cb) { setTimeout(function () { cb({ host: "Excel" }); }, 0); } };
+  // Копия книги: dev/sample.xlsx или книга, созданная предыдущим запуском (__docBytes).
+  window.Office = {
+    onReady: function (cb) { setTimeout(function () { cb({ host: "Excel" }); }, 0); },
+    FileType: { Compressed: "compressed" },
+    AsyncResultStatus: { Succeeded: "succeeded", Failed: "failed" },
+    context: { document: { getFileAsync: function (type, opts, cb) {
+      var load = window.__docBytes ? Promise.resolve(window.__docBytes)
+        : fetch("sample.xlsx").then(function (r) { return r.arrayBuffer(); }).then(function (b) { return new Uint8Array(b); });
+      load.then(function (bytes) {
+        var size = opts.sliceSize, count = Math.ceil(bytes.length / size);
+        cb({ status: "succeeded", value: {
+          sliceCount: count,
+          getSliceAsync: function (i, cb2) { cb2({ status: "succeeded", value: { data: Array.from(bytes.subarray(i * size, (i + 1) * size)) } }); },
+          closeAsync: function () {}
+        } });
+      });
+    } } }
+  };
   window.Excel = {
+    createWorkbook: function (b64) { window.__created = b64; return Promise.resolve(); },
     run: function (fn) {
       var ctx = { workbook: {
         getSelectedRange: function () { return rangeObj(1, 0, 8, 1); },

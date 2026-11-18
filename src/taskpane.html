@@ -21,10 +21,25 @@
     <section>
       <h2><span class="num">2</span> Куда вставлять</h2>
       <label class="row">
-        <span>Столбец для картинок</span>
-        <input id="targetCol" type="text" class="short" placeholder="B" maxlength="3" autocomplete="off">
+        <select id="insertMode">
+          <option value="cell">в ячейку столбца</option>
+          <option value="note">в примечание (видно при наведении)</option>
+        </select>
       </label>
-      <p class="hint">Картинка встаёт в этот столбец, в ту же строку, что и название.</p>
+      <div class="cellOnly">
+        <label class="row">
+          <span>Столбец для картинок</span>
+          <input id="targetCol" type="text" class="short" placeholder="B" maxlength="3" autocomplete="off">
+        </label>
+        <p class="hint">Картинка встаёт в этот столбец, в ту же строку, что и название.</p>
+      </div>
+      <div class="noteOnly" hidden>
+        <label class="row">
+          <span>Размер примечания, пикс.</span>
+          <input id="noteSize" type="number" class="short" min="50" max="1000" value="300">
+        </label>
+        <p class="hint">Примечание с картинкой добавляется к ячейке с названием. Результат откроется новой книгой, текущая не меняется. Сохраните новую книгу.</p>
+      </div>
     </section>
 
     <section>
@@ -51,7 +66,8 @@
     </section>
 
     <details>
-      <summary>Размер и привязка</summary>
+      <summary>Дополнительно</summary>
+      <div class="cellOnly">
       <label class="row">
         <span>Высота строки</span>
         <select id="sizeMode">
@@ -75,9 +91,10 @@
           <option value="Absolute">не привязывать</option>
         </select>
       </label>
+      </div>
       <label class="check"><input id="compress" type="checkbox" checked> Уменьшать большие картинки, чтобы файл был лёгким</label>
-      <label class="check"><input id="replace" type="checkbox" checked> Заменять картинки, вставленные раньше в эти ячейки</label>
-      <label class="check"><input id="markMissing" type="checkbox"> Закрашивать ячейки, для которых картинка не найдена</label>
+      <label class="check"><input id="replace" type="checkbox" checked> Заменять картинки, вставленные раньше надстройкой в эти ячейки</label>
+      <label class="check cellOnly"><input id="markMissing" type="checkbox"> Закрашивать ячейки, для которых картинка не найдена</label>
     </details>
 
     <button id="run" type="button" class="primary">Вставить картинки</button>
@@ -93,6 +110,7 @@
     <button id="removeAll" type="button" class="link">Удалить с листа все картинки, вставленные надстройкой</button>
   </main>
   <script src="logic.js"></script>
+  <script src="notes.js"></script>
   <script src="taskpane.js"></script>
 </body>
 </html>
