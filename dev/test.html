@@ -29,13 +29,17 @@
 
     <section>
       <h2><span class="num">3</span> Картинки</h2>
+      <div id="dropZone" class="drop">
+        <strong>Перетащите сюда папку из Finder</strong>
+        <span>картинки возьмутся из неё и всех подпапок</span>
+      </div>
       <div class="row">
-        <label class="btn" for="pickFolder">Выбрать папку</label>
-        <input id="pickFolder" type="file" webkitdirectory directory multiple hidden>
-        <label class="btn" for="pickFiles">Выбрать файлы</label>
-        <input id="pickFiles" type="file" multiple accept="image/*,.heic,.heif" hidden>
+        <label class="btn" for="pickFiles">Выбрать файлы или ZIP</label>
+        <input id="pickFiles" type="file" multiple accept="image/*,.heic,.heif,.zip,application/zip" hidden>
+        <button id="clearFiles" type="button" class="link" hidden>Очистить список</button>
       </div>
       <p class="hint" id="filesInfo">Картинки ещё не выбраны.</p>
+      <p class="hint">Если папка не перетаскивается: правой кнопкой по папке → «Сжать», затем выберите получившийся ZIP.</p>
       <label class="row">
         <span>Название файла</span>
         <select id="matchMode">

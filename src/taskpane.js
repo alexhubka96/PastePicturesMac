@@ -10,8 +10,9 @@
 
   Office.onReady(function () {
     $("takeSelection").onclick = takeSelection;
-    $("pickFolder").onchange = onFilesPicked;
     $("pickFiles").onchange = onFilesPicked;
+    $("clearFiles").onclick = clearFiles;
+    setupDrop();
     $("sizeMode").onchange = function () { $("rowHeightRow").hidden = this.value !== "row"; };
     $("run").onclick = run;
     $("removeAll").onclick = removeAll;
@@ -54,17 +55,170 @@
     }
   }
 
+  // ---------- выбор картинок: файлы, ZIP, перетаскивание папки ----------
+
   function onFilesPicked(e) {
-    // Новый выбор добавляется к уже выбранным картинкам.
     var picked = Array.prototype.slice.call(e.target.files || []);
-    state.files = state.files.concat(picked);
-    state.index = L.buildIndex(state.files);
-    var n = state.index.list.length;
-    var skipped = state.files.length - n;
-    $("filesInfo").textContent = n
-      ? "Выбрано картинок: " + n + (skipped ? " (пропущено не-картинок: " + skipped + ")" : "") + ". Повторный выбор добавляет к списку."
-      : "Среди выбранных файлов нет картинок.";
     e.target.value = "";
+    addFiles(picked);
+  }
+
+  function clearFiles() {
+    state.files = [];
+    state.index = null;
+    $("filesInfo").textContent = "Картинки ещё не выбраны.";
+    $("clearFiles").hidden = true;
+  }
+
+  // Новый выбор добавляется к уже выбранным картинкам. ZIP-архивы раскрываются.
+  function addFiles(files) {
+    if (!files.length) return Promise.resolve();
+    var zips = files.filter(function (f) { return L.fileExt(f.name) === "zip"; });
+    var plain = files.filter(function (f) { return L.fileExt(f.name) !== "zip"; });
+    $("filesInfo").textContent = zips.length ? "Читаю архив…" : "Читаю…";
+    return Promise.all(zips.map(expandZip))
+      .then(function (lists) {
+        var fromZips = [].concat.apply([], lists);
+        state.files = state.files.concat(plain, fromZips);
+        state.index = L.buildIndex(state.files);
+        var n = state.index.list.length;
+        $("filesInfo").textContent = n
+          ? "Выбрано картинок: " + n + ". Повторный выбор добавляет к списку."
+          : "Среди выбранных файлов нет картинок.";
+        $("clearFiles").hidden = state.files.length === 0;
+      })
+      .catch(function (err) {
+        $("filesInfo").textContent = "Не удалось прочитать: " + (err && err.message ? err.message : err);
+      });
+  }
+
+  function setupDrop() {
+    var zone = $("dropZone");
+    var depth = 0;
+    // Принимаем перетаскивание на всю панель, чтобы не промахнуться мимо поля.
+    document.addEventListener("dragenter", function (e) {
+      e.preventDefault();
+      depth++;
+      zone.classList.add("over");
+    });
+    document.addEventListener("dragleave", function () {
+      depth = Math.max(0, depth - 1);
+      if (!depth) zone.classList.remove("over");
+    });
+    document.addEventListener("dragover", function (e) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    });
+    document.addEventListener("drop", function (e) {
+      e.preventDefault();
+      depth = 0;
+      zone.classList.remove("over");
+      var dt = e.dataTransfer;
+      if (!dt) return;
+      // Записи папок нужно забрать сразу, пока событие не закончилось.
+      var entries = [];
+      if (dt.items) {
+        for (var i = 0; i < dt.items.length; i++) {
+          var it = dt.items[i];
+          var en = it.kind === "file" && it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
+          if (en) entries.push(en);
+        }
+      }
+      var plainFiles = Array.prototype.slice.call(dt.files || []);
+      $("filesInfo").textContent = "Читаю папку…";
+      (entries.length ? collectEntries(entries) : Promise.resolve(plainFiles))
+        .then(addFiles)
+        .catch(function (err) {
+          $("filesInfo").textContent = "Не удалось прочитать папку: " + (err && err.message ? err.message : err);
+        });
+    });
+  }
+
+  // Обходит перетащенные папки со всеми подпапками и возвращает список файлов.
+  function collectEntries(entries) {
+    var out = [];
+    function walk(entry) {
+      if (entry.isFile) {
+        return new Promise(function (resolve) {
+          entry.file(function (f) {
+            try { f.ppPath = entry.fullPath.replace(/^\//, ""); } catch (e) { /* путь только для показа */ }
+            out.push(f);
+            resolve();
+          }, function () { resolve(); });
+        });
+      }
+      if (entry.isDirectory) {
+        return readAll(entry.createReader()).then(function (children) {
+          return children.reduce(function (p, c) { return p.then(function () { return walk(c); }); }, Promise.resolve());
+        });
+      }
+      return Promise.resolve();
+    }
+    // readEntries отдаёт содержимое порциями, читаем до пустой порции.
+    function readAll(reader) {
+      var all = [];
+      return new Promise(function (resolve, reject) {
+        (function next() {
+          reader.readEntries(function (batch) {
+            if (!batch.length) return resolve(all);
+            all = all.concat(Array.prototype.slice.call(batch));
+            next();
+          }, reject);
+        })();
+      });
+    }
+    return entries.reduce(function (p, en) { return p.then(function () { return walk(en); }); }, Promise.resolve())
+      .then(function () { return out; });
+  }
+
+  // ---------- ZIP ----------
+
+  var JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+
+  function loadJsZip() {
+    if (window.JSZip) return Promise.resolve(window.JSZip);
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = JSZIP_URL;
+      s.onload = function () { resolve(window.JSZip); };
+      s.onerror = function () { reject(new Error("не загрузился модуль для ZIP, проверьте интернет")); };
+      document.head.appendChild(s);
+    });
+  }
+
+  // Имена в архивах с Mac — UTF-8; в архивах с русской Windows — кодировка 866.
+  function decodeZipName(bytes) {
+    var u8 = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+    try { return new TextDecoder("utf-8", { fatal: true }).decode(u8); }
+    catch (e) { return new TextDecoder("ibm866").decode(u8); }
+  }
+
+  // Возвращает «ленивые» файлы: содержимое распаковывается только для найденных картинок.
+  function expandZip(file) {
+    return loadJsZip()
+      .then(function (JSZip) { return JSZip.loadAsync(file, { decodeFileName: decodeZipName }); })
+      .then(function (zip) {
+        var out = [];
+        zip.forEach(function (path, entry) {
+          if (entry.dir || path.indexOf("__MACOSX/") === 0) return;
+          var name = path.split("/").pop();
+          if (!L.isImageName(name)) return;
+          out.push({ name: name, ppPath: file.name + "/" + path, zipEntry: entry });
+        });
+        return out;
+      }, function () {
+        throw new Error(file.name + " — архив повреждён или это не ZIP");
+      });
+  }
+
+  var MIME = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", bmp: "image/bmp",
+    webp: "image/webp", heic: "image/heic", heif: "image/heif", tif: "image/tiff", tiff: "image/tiff" };
+
+  function realFile(f) {
+    if (!f.zipEntry) return Promise.resolve(f);
+    return f.zipEntry.async("blob").then(function (b) {
+      return new File([b], f.name, { type: MIME[L.fileExt(f.name)] || "" });
+    });
   }
 
   // ---------- Excel ----------
@@ -198,10 +352,14 @@
   }
 
   function addOne(sheet, job, targetCol, opts) {
-    return decodeImage(job.item.file).then(function (img) {
+    var file;
+    return realFile(job.item.file).then(function (f) {
+      file = f;
+      return decodeImage(f);
+    }).then(function (img) {
       var cell = { left: job.cell.left, top: job.cell.top, width: job.cell.width, height: job.cell.height };
       var box = L.fitRect(cell, img.width, img.height, opts.padding);
-      return encodeImage(job.item.file, img, box, opts.compress).then(function (base64) {
+      return encodeImage(file, img, box, opts.compress).then(function (base64) {
         img.release();
         var shape = sheet.shapes.addImage(base64);
         shape.name = L.shapeName(targetCol, job.row);
@@ -305,5 +463,5 @@
   }
 
   // Для проверки без Excel (dev/test.html).
-  window.__PP = { state: state, onFilesPicked: onFilesPicked, run: run };
+  window.__PP = { state: state, onFilesPicked: onFilesPicked, addFiles: addFiles, collectEntries: collectEntries, run: run };
 })();

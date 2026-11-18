@@ -17,6 +17,18 @@ assert.strictEqual(L.findFile(idx, "синий", "contains").file.name, "A-100 �
 assert.strictEqual(L.findFile(idx, "синий", "starts"), null);
 assert.strictEqual(L.findFile(idx, "", "contains"), null);
 
+// Название с расширением в ячейке
+const idx2 = L.buildIndex([f("картинка.jpg", "a/картинка.jpg"), f("картинка.png", "b/картинка.png"), f("фото.jpeg")]);
+assert.strictEqual(L.findFile(idx2, "картинка.png", "exact").file.name, "картинка.png");  // именно этот файл
+assert.strictEqual(L.findFile(idx2, "Картинка.PNG", "exact").file.name, "картинка.png");
+assert.strictEqual(L.findFile(idx2, "картинка", "exact").file.name, "картинка.jpg");      // первый по пути
+assert.strictEqual(L.findFile(idx2, "фото.png", "exact").file.name, "фото.jpeg");         // нет .png — любой «фото»
+assert.strictEqual(L.findFile(idx2, "фот.png", "starts").file.name, "фото.jpeg");
+assert.strictEqual(L.findFile(idx2, "нет.png", "exact"), null);
+assert.strictEqual(L.findFile(idx2, "12.5", "exact"), null);                               // не расширение
+// Путь из перетащенной папки или архива
+assert.strictEqual(L.buildIndex([{ name: "x.jpg", ppPath: "Папка/Под/x.jpg" }]).list[0].path, "Папка/Под/x.jpg");
+
 // Вписывание: широкая картинка в квадратную ячейку
 const r = L.fitRect({ left: 100, top: 50, width: 80, height: 80 }, 400, 200, 2);
 assert.deepStrictEqual(r, { left: 102, top: 71, width: 76, height: 38 });

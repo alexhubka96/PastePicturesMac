@@ -50,7 +50,7 @@
   window.Excel = {
     run: function (fn) {
       var ctx = { workbook: {
-        getSelectedRange: function () { return rangeObj(1, 0, 6, 1); },
+        getSelectedRange: function () { return rangeObj(1, 0, 8, 1); },
         worksheets: {
           getActiveWorksheet: function () { return ws; },
           getItem: function (n) { if (n !== sheet.name) { var e = new Error("no sheet"); e.code = "ItemNotFound"; throw e; } return ws; }

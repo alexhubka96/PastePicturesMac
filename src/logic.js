@@ -31,8 +31,10 @@
     return IMAGE_EXT.indexOf(fileExt(n)) !== -1;
   }
 
+  // Путь для показа и сортировки: из перетащенной папки или архива (ppPath),
+  // из выбора папки (webkitRelativePath) или просто имя файла.
   function filePath(file) {
-    return file.webkitRelativePath || file.name;
+    return file.ppPath || file.webkitRelativePath || file.name;
   }
 
   // Строит индекс по выбранным файлам. Повторы с одинаковым названием: берётся первый по пути.
@@ -41,19 +43,30 @@
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
       if (!isImageName(f.name)) continue;
-      list.push({ key: normalizeKey(baseName(f.name)), path: filePath(f), file: f });
+      list.push({ key: normalizeKey(baseName(f.name)), full: normalizeKey(f.name), path: filePath(f), file: f });
     }
     list.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
     var exact = new Map();
-    list.forEach(function (it) { if (!exact.has(it.key)) exact.set(it.key, it); });
-    return { list: list, exact: exact };
+    var full = new Map();
+    list.forEach(function (it) {
+      if (!exact.has(it.key)) exact.set(it.key, it);
+      if (!full.has(it.full)) full.set(it.full, it);
+    });
+    return { list: list, exact: exact, full: full };
   }
 
-  // Ищет файл для значения ячейки. Точное совпадение всегда в приоритете;
-  // в режимах «начинается» и «содержит» из нескольких кандидатов берётся самое короткое название.
+  // Ищет файл для значения ячейки. Если в ячейке написано имя с расширением картинки
+  // («картинка.png»), сначала ищется именно такой файл, потом любая картинка «картинка».
+  // Точное совпадение всегда в приоритете; в режимах «начинается» и «содержит»
+  // из нескольких кандидатов берётся самое короткое название.
   function findFile(index, value, mode) {
     var key = normalizeKey(value);
     if (!key) return null;
+    if (isImageName(key)) {
+      var whole = index.full.get(key);
+      if (whole) return whole;
+      key = baseName(key);
+    }
     var hit = index.exact.get(key);
     if (hit) return hit;
     if (mode === "exact") return null;

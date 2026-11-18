@@ -1,7 +1,7 @@
 // Создаёт тестовые картинки и рисует «лист» с вставленными картинками.
 (function () {
   var S = window.__mockSheet;
-  ["Артикул", "123", "Чайник-й", "big", "нет такого", "broken", "12"].forEach(function (v, i) { S.cells[i + ":0"] = v; });
+  ["Артикул", "123", "Чайник-й", "big.png", "нет такого", "broken", "12345.JPG", "zz", "deep.png"].forEach(function (v, i) { S.cells[i + ":0"] = v; });
 
   function make(name, w, h, color, type, alpha) {
     return new Promise(function (res) {
@@ -22,8 +22,8 @@
       Promise.resolve(new File(["garbage"], "broken.jpg", { type: "image/jpeg" })),
       Promise.resolve(new File(["x"], ".DS_Store"))
     ]).then(function (files) {
-      window.__PP.onFilesPicked({ target: { files: files, value: "" } });
-      return files.length;
+      return window.__PP.addFiles(files).then(function () { return files.length; });
+
     });
   };
 
@@ -33,7 +33,7 @@
   document.body.appendChild(view);
   window.__render = function () {
     var html = "";
-    for (var r = 0; r < 8; r++) for (var c = 0; c < 4; c++) {
+    for (var r = 0; r < 10; r++) for (var c = 0; c < 4; c++) {
       var top = S.top(r), h = S.rowHeight(r), fill = S.fills[r + ":" + c] || "transparent";
       html += '<div style="position:absolute;left:' + c * 64 + 'px;top:' + top + 'px;width:64px;height:' + h + 'px;border:1px solid #ddd;background:' + fill + ';font:10px sans-serif;color:#000;overflow:hidden">' + (S.cells[r + ":" + c] ?? "") + '</div>';
     }
